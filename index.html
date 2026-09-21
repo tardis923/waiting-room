@@ -1,0 +1,807 @@
+﻿<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>考生座次表生成器</title>
+<script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+<style>
+  *{box-sizing:border-box}
+  html,body{margin:0;padding:0}
+  body{background:#eef1f5;color:#222;
+       font-family:"Microsoft YaHei","PingFang SC","Hiragino Sans GB","SimSun",sans-serif}
+
+  /* ---------------- 工具栏 ---------------- */
+  .toolbar{
+    position:sticky;top:0;z-index:99;
+    display:flex;flex-wrap:wrap;gap:14px;align-items:center;
+    padding:12px 18px;background:#fff;border-bottom:1px solid #d7dde6;
+    box-shadow:0 1px 5px rgba(0,0,0,.07);
+  }
+  .toolbar .item{display:flex;align-items:center;gap:8px}
+  .toolbar label{font-size:14px;font-weight:600;white-space:nowrap}
+  .toolbar input[type=text]{
+    width:280px;padding:7px 11px;font-size:14px;border:1px solid #c4ccd8;
+    border-radius:5px;outline:none;font-family:Consolas,Menlo,monospace;
+  }
+  .toolbar input[type=text]:focus{border-color:#1a6fd4;box-shadow:0 0 0 2px rgba(26,111,212,.15)}
+  .toolbar input[type=file]{font-size:13px;max-width:230px}
+  .toolbar button{
+    padding:7px 18px;font-size:14px;border:0;border-radius:5px;
+    background:#1a6fd4;color:#fff;cursor:pointer;transition:.15s;
+  }
+  .toolbar button:hover{background:#155cb0}
+  .toolbar button.green{background:#0f9d58}
+  .toolbar button.green:hover{background:#0c7f46}
+  .toolbar button.gray{background:#6b7280}
+  .toolbar button.gray:hover{background:#575e6a}
+  .hint{font-size:12px;color:#8a93a0}
+  #fileName{font-size:12px;color:#1a6fd4;max-width:220px;overflow:hidden;
+            text-overflow:ellipsis;white-space:nowrap}
+  #tip{font-size:13px;color:#0f9d58;font-weight:600}
+
+  /* ---------------- 弹窗 ---------------- */
+  #mask{position:fixed;inset:0;background:rgba(0,0,0,.42);display:none;
+        align-items:center;justify-content:center;z-index:200;padding:20px}
+  #mask.show{display:flex}
+  .modal{background:#fff;border-radius:10px;width:100%;max-width:640px;max-height:82vh;
+         display:flex;flex-direction:column;box-shadow:0 12px 40px rgba(0,0,0,.3)}
+  .modal h3{margin:0;padding:16px 20px;font-size:16px;border-bottom:1px solid #eee}
+  .modal .body{padding:16px 20px;overflow:auto;font-size:14px;line-height:1.75}
+  .modal .body ul{margin:6px 0 0;padding-left:20px}
+  .modal .foot{padding:12px 20px;border-top:1px solid #eee;text-align:right}
+  .modal .foot button{padding:7px 22px;border:0;border-radius:5px;background:#1a6fd4;
+                      color:#fff;cursor:pointer;font-size:14px}
+  .ok{color:#0f9d58;font-weight:700;font-size:15px}
+  .bad{color:#d93025;font-weight:700;font-size:15px}
+
+  /* ---------------- 输出区 ---------------- */
+  #out{overflow-x:auto;padding:18px 12px 60px}
+
+  /* ---------------- A4 横向页面 ---------------- */
+  @page{size:A4 landscape;margin:0}
+
+  .page{
+    width:297mm;height:209mm;background:#fff;
+    display:flex;flex-direction:column;overflow:hidden;
+  }
+  @media screen{
+    .page{margin:0 auto 18px;box-shadow:0 2px 12px rgba(0,0,0,.16)}
+  }
+  @media print{
+    body{background:#fff}
+    .toolbar,#mask,#tip,#fileName{display:none !important}
+    #out{padding:0;overflow:visible}
+    .page{margin:0;box-shadow:none;page-break-after:always;break-after:page}
+    .page:last-child{page-break-after:auto;break-after:auto}
+  }
+
+  /* ★ 三个字号分别用三个变量控制 */
+  .page h2{
+    margin:0 0 3.5mm;text-align:center;font-weight:700;flex:0 0 auto;
+    font-size:var(--fs-title);letter-spacing:.5px;color:#000;
+  }
+  .page table{
+    width:100%;border-collapse:collapse;table-layout:fixed;
+    font-size:var(--fs-other);color:#000;
+  }
+  .page td.name-cell{font-size:var(--fs-name)}
+  .page th,.page td{
+    border:.6pt solid #000;padding:0 .6mm;text-align:center;vertical-align:middle;
+    line-height:1.25;word-break:break-all;overflow-wrap:anywhere;
+  }
+  .page thead tr:nth-child(1)>*{height:var(--h1)}
+  .page thead tr:nth-child(2)>*{height:var(--h2)}
+  .page thead tr:nth-child(3)>*{height:var(--h3)}
+  .page tbody td{height:var(--rowH)}
+
+  /* ★ 转置表：每行高度由 JS 单独指定，不受全局 --rowH 影响 */
+  .page.transposed tbody td{height:auto}
+
+  .page thead th,.page thead td{font-weight:700}
+  .c-seat{background:#f4f6f8;font-weight:700}
+  .empty{color:#c9c9c9}
+</style>
+</head>
+<body>
+
+<!-- ==================== 工具栏 ==================== -->
+<div class="toolbar">
+  <div class="item">
+    <label>上传数据：</label>
+    <input type="file" id="file" accept=".xls,.xlsx,.csv">
+    <span id="fileName"></span>
+  </div>
+
+  <div class="item">
+    <label>每个候考室考场数量：</label>
+    <input type="text" id="cfg" value="3,3,3,3,3,3,3" spellcheck="false">
+  </div>
+
+  <button id="btnCheck" class="gray" onclick="doCheck()">检测</button>
+  <button id="btnGen" class="green" style="display:none" onclick="render()">生成座次表</button>
+  <button id="btnPrint" style="display:none" onclick="exportPDF()">导出PDF</button>
+
+  <span id="tip" class="hint">数字后加 * 表示该候考室为阶梯教室（转置），例：3,3*,3,3</span>
+</div>
+
+<div id="out"></div>
+
+<!-- ==================== 弹窗 ==================== -->
+<div id="mask">
+  <div class="modal">
+    <h3 id="mTitle">提示</h3>
+    <div class="body" id="mBody"></div>
+    <div class="foot"><button onclick="closeModal()">知道了</button></div>
+  </div>
+</div>
+
+<script>
+/* ======================================================================
+   ★★★ 可调参数：行高 / 列宽 / 字号 / 边距 都在这里改 ★★★
+   ====================================================================== */
+const CONFIG = {
+  /* ---------- 普通候考室：列宽 ---------- */
+  seatColPercent : 9,      // “座位”列宽（占整表百分比）
+  groupColPercent: null,   // 每个“组”列宽（%）；null = 自动均分剩余宽度
+
+  /* ---------- 普通候考室：行高（单位：mm） ---------- */
+  headerRowHeight : 6.8,   // 表头每行的基准高度
+  dataRowHeight   : 9.5,   // 数据行的基准高度
+  minDataRowHeight: 6,     // 内容过多自动压缩时，数据行的最小高度
+
+  /* ==================================================================
+     ★★★ 三个独立字号（单位：pt） ★★★
+     ================================================================== */
+  titleFontSize : 15,      // ① 标题字号
+  nameFontSize  : 12,    // ② 姓名区域字号（表格中所有考生姓名）
+  otherFontSize : 10.5,    // ③ 其他区域字号（表头、座位号、考场号、学科）
+
+  minFontSize   : 6.5,     // 自动压缩时的最小字号下限
+
+  /* ---------- 页面内边距（单位：mm） ---------- */
+  padTop   : 9,
+  padX     : 12,
+  padBottom: 7,
+
+  /* ---------- 标题区高度估算（mm） ---------- */
+  titleBlockHeight: 12,
+
+  /* ==================================================================
+     ★★★ 阶梯教室（转置）专用参数 ★★★
+     ================================================================== */
+  transSeatColPercent : 7,     // 第一列“座位”宽度（%）
+  transRoomColPercent : 4,     // 第二列“考场”宽度（%）
+  transSubjColPercent : 10,    // 第三列“学科”宽度（%）
+
+  transDataRowHeight  : 12,    // 普通行（学科少的行）固定行高（mm）
+  transMinRowHeight   : 6,     // 压缩时的最小行高（mm）
+  transMaxRowExtra    : 2.5    // 最高行在“学科行数×行文字高”之外额外留白（mm）
+};
+
+const PAGE_W = 297, PAGE_H = 209;   // A4 横向尺寸（mm）
+
+/* ======================================================================
+   全局状态
+   ====================================================================== */
+let DB = null;
+let HAS_RENDERED = false;
+
+/* ======================================================================
+   基础工具
+   ====================================================================== */
+const CN_DIGIT = ['零','一','二','三','四','五','六','七','八','九'];
+function cnNum(n){
+  if (n <= 0) return String(n);
+  if (n <= 10) return n === 10 ? '十' : CN_DIGIT[n];
+  if (n < 20)  return '十' + CN_DIGIT[n % 10];
+  if (n < 100){
+    const t = Math.floor(n / 10), r = n % 10;
+    return CN_DIGIT[t] + '十' + (r ? CN_DIGIT[r] : '');
+  }
+  return String(n);
+}
+const pad2 = n => String(n).padStart(2, '0');
+function normTime(t){
+  const m = String(t).match(/(\d{1,2}):(\d{2})/);
+  return m ? pad2(+m[1]) + ':' + m[2] : String(t);
+}
+function escapeHtml(s){
+  return String(s).replace(/[&<>"']/g, c => ({
+    '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'
+  }[c]));
+}
+function setTip(text){
+  const el = document.getElementById('tip');
+  el.textContent = text;
+  el.className = 'hint';
+}
+
+/* ======================================================================
+   弹窗
+   ====================================================================== */
+function showModal(title, html){
+  document.getElementById('mTitle').textContent = title;
+  document.getElementById('mBody').innerHTML = html;
+  document.getElementById('mask').classList.add('show');
+}
+function closeModal(){
+  document.getElementById('mask').classList.remove('show');
+}
+
+/* ======================================================================
+   文件读取
+   ====================================================================== */
+function readWorkbook(file){
+  return new Promise((resolve, reject) => {
+    if (typeof XLSX === 'undefined'){
+      reject(new Error('解析库 XLSX 未加载成功（可能无网络）。请联网后刷新页面，'
+                     + '或把 Excel 另存为 .csv 文件后再上传。'));
+      return;
+    }
+    const fr = new FileReader();
+    fr.onerror = () => reject(new Error('文件读取失败'));
+    fr.onload = e => {
+      try{
+        let wb;
+        if (/\.csv$/i.test(file.name)){
+          wb = XLSX.read(e.target.result, {type:'string'});
+        }else{
+          wb = XLSX.read(new Uint8Array(e.target.result), {type:'array'});
+        }
+        resolve(wb);
+      }catch(err){
+        reject(new Error('文件解析失败：' + (err.message || err)));
+      }
+    };
+    if (/\.csv$/i.test(file.name)) fr.readAsText(file, 'UTF-8');
+    else fr.readAsArrayBuffer(file);
+  });
+}
+
+function pickSheet(wb, keyword, fallbackIdx){
+  const names = wb.SheetNames || [];
+  let hit = names.find(n => String(n).replace(/\s/g,'').indexOf(keyword) >= 0);
+  if (!hit && names[fallbackIdx] != null) hit = names[fallbackIdx];
+  return hit ? wb.Sheets[hit] : null;
+}
+
+function sheetRows(ws){
+  return XLSX.utils.sheet_to_json(ws, {header:1, defval:'', raw:false, blankrows:false});
+}
+
+/* ======================================================================
+   数据解析
+   ====================================================================== */
+function splitDateTime(raw){
+  const s = String(raw || '').trim();
+  let date = '';
+
+  const dm = s.match(/(\d{4})\s*[-\/年.]\s*(\d{1,2})\s*[-\/月.]\s*(\d{1,2})/);
+  if (dm){
+    date = dm[1] + '-' + pad2(dm[2]) + '-' + pad2(dm[3]);
+  }else{
+    const n = parseFloat(s);
+    if (!isNaN(n) && n > 20000 && n < 60000){
+      const d = new Date(Math.round((n - 25569) * 86400000));
+      date = d.getUTCFullYear() + '-' + pad2(d.getUTCMonth()+1) + '-' + pad2(d.getUTCDate());
+    }
+  }
+
+  const times = s.match(/\d{1,2}:\d{2}/g) || [];
+  const start = times[0] ? normTime(times[0]) : '';
+  const end   = times[1] ? normTime(times[1]) : '';
+  return {date, start, end};
+}
+
+function buildSubjectMap(rows){
+  const map = {};
+  for (let i = 0; i < rows.length; i++){
+    const r = rows[i] || [];
+    const a = String(r[0] || '').trim();
+    const b = String(r[1] || '').trim();
+    if (!a || !b) continue;
+    if (a === '学科' && b === '精简') continue;
+    map[a] = b;
+  }
+  return map;
+}
+
+function buildDatabase(rows, subjectMap){
+  let hi = -1;
+  for (let i = 0; i < Math.min(rows.length, 10); i++){
+    const line = (rows[i] || []).map(c => String(c).trim()).join('|');
+    if (line.indexOf('面试室') >= 0 && line.indexOf('姓名') >= 0){ hi = i; break; }
+  }
+  if (hi < 0) throw new Error('未找到表头行（需要包含“考生姓名、科目、考试日期、面试室”等列）');
+
+  const H = (rows[hi] || []).map(c => String(c).trim());
+  const idxOf = kw => H.findIndex(h => h.indexOf(kw) >= 0);
+
+  const iName = idxOf('姓名');
+  const iSubj = idxOf('科目');
+  const iDate = idxOf('考试日期');
+  const iRoom = idxOf('面试室');
+  if ([iName, iSubj, iDate, iRoom].some(i => i < 0)){
+    throw new Error('表头缺少必要列：考生姓名 / 科目 / 考试日期 / 面试室');
+  }
+
+  const map = new Map();
+
+  for (let i = hi + 1; i < rows.length; i++){
+    const r = rows[i];
+    if (!r) continue;
+
+    const name    = String(r[iName] || '').trim();
+    const subject = String(r[iSubj] || '').trim();
+    const dtRaw   = String(r[iDate] || '').trim();
+    const roomRaw = String(r[iRoom] || '').trim();
+    if (!name || !roomRaw) continue;
+
+    const roomNo = parseInt(roomRaw, 10);
+    if (!roomNo) continue;
+
+    const {date, start, end} = splitDateTime(dtRaw);
+    const key = date + '|' + start;
+
+    if (!map.has(key)) map.set(key, {date, start, end, rooms: new Map()});
+    const ses = map.get(key);
+
+    if (!ses.rooms.has(roomNo)){
+      ses.rooms.set(roomNo, {no: roomNo, subjects: [], names: []});
+    }
+    const room = ses.rooms.get(roomNo);
+
+    const sj = subjectMap[subject] || subject;
+    if (sj && room.subjects.indexOf(sj) === -1) room.subjects.push(sj);
+    room.names.push(name);
+  }
+
+  if (!map.size) throw new Error('未解析到任何有效数据，请检查文件内容。');
+
+  const toMin = t => {
+    const m = String(t || '').match(/(\d{1,2}):(\d{2})/);
+    return m ? (+m[1]) * 60 + (+m[2]) : 0;
+  };
+
+  const sessions = Array.from(map.values()).map(s => {
+    s.rooms = Array.from(s.rooms.values()).sort((a, b) => a.no - b.no);
+    return s;
+  }).sort((a, b) => {
+    if (a.date !== b.date) return a.date < b.date ? -1 : 1;
+    return toMin(a.start) - toMin(b.start);
+  });
+
+  return {sessions};
+}
+
+/* ======================================================================
+   上传文件
+   ====================================================================== */
+async function handleFile(file){
+  if (!file) return;
+  hideActions();
+  HAS_RENDERED = false;
+  document.getElementById('out').innerHTML = '';
+  setTip('正在解析文件…');
+
+  try{
+    const wb      = await readWorkbook(file);
+    const wsMain  = pickSheet(wb, '面试室安排', 0);
+    const wsSubj  = pickSheet(wb, '学科精简', 1);
+    if (!wsMain) throw new Error('未找到「面试室安排」工作表');
+
+    const rowsMain   = sheetRows(wsMain);
+    const subjectMap = wsSubj ? buildSubjectMap(sheetRows(wsSubj)) : {};
+
+    DB = buildDatabase(rowsMain, subjectMap);
+
+    const roomSet = new Set();
+    DB.sessions.forEach(s => s.rooms.forEach(r => roomSet.add(r.no)));
+
+    document.getElementById('fileName').textContent = file.name;
+    setTip(`解析成功：${DB.sessions.length} 个场次，面试室（去重）共 ${roomSet.size} 个。请点「检测」。`);
+  }catch(e){
+    DB = null;
+    document.getElementById('fileName').textContent = '';
+    setTip('解析失败');
+    showModal('解析失败', '<p>' + escapeHtml(e.message || String(e)) + '</p>');
+  }finally{
+    document.getElementById('file').value = '';
+  }
+}
+
+/* ======================================================================
+   解析设置
+   ====================================================================== */
+function parseSizes(){
+  const raw = document.getElementById('cfg').value || '';
+  return raw.split(/[，,、;；\s]+/)
+            .filter(Boolean)
+            .map(s => {
+              const trans = /\*/.test(s);
+              const n = parseInt(s.replace(/\*/g, ''), 10);
+              return {n, trans};
+            })
+            .filter(o => Number.isFinite(o.n) && o.n > 0);
+}
+
+function showActions(){
+  document.getElementById('btnGen').style.display   = '';
+  document.getElementById('btnPrint').style.display = '';
+}
+function hideActions(){
+  document.getElementById('btnGen').style.display   = 'none';
+  document.getElementById('btnPrint').style.display = 'none';
+}
+
+/* ======================================================================
+   检测
+   ====================================================================== */
+function doCheck(){
+  if (!DB){
+    showModal('提示', '<p>请先上传数据文件。</p>');
+    return;
+  }
+  const sizes = parseSizes();
+  if (!sizes.length){
+    showModal('提示', '<p>请填写有效的考场数量，例如：<b>3,3,3,3,3,3,3</b></p>');
+    return;
+  }
+  const sum = sizes.reduce((a, b) => a + b.n, 0);
+
+  const allRooms = new Set();
+  DB.sessions.forEach(s => s.rooms.forEach(r => allRooms.add(r.no)));
+  const total = allRooms.size;
+
+  const detail = DB.sessions.map(s => {
+    const nos = s.rooms.map(r => r.no).sort((a, b) => a - b);
+    const label = (s.date || '未识别日期') + (s.start ? ' ' + s.start : '');
+    const range = nos.length ? `${nos[0]} ~ ${nos[nos.length - 1]}` : '—';
+    return `<li>${escapeHtml(label)}：<b>${nos.length}</b> 个（${escapeHtml(range)}）</li>`;
+  }).join('');
+
+  const cfgList = sizes.map((s, i) =>
+    `第${cnNum(i + 1)}候考室：${s.n} 个考场${s.trans ? ' <b style="color:#c2570a">（阶梯教室·转置）</b>' : ''}`
+  ).join('<br>');
+
+  const baseInfo =
+    `<p>考场数量总和（按你的设置）：<b>${sum}</b></p>
+     <p>上传数据中面试室（去重）数量：<b>${total}</b></p>
+     <hr style="border:0;border-top:1px solid #eee;margin:12px 0">
+     <p style="margin:0">候考室格式：</p>
+     <p style="margin:4px 0 0;font-size:13px">${cfgList}</p>
+     <hr style="border:0;border-top:1px solid #eee;margin:12px 0">
+     <p style="margin:0">各场次明细：</p><ul>${detail}</ul>`;
+
+  if (total !== sum){
+    showModal('检测不通过',
+      `<p class="bad">❌ 面试室数量与考场数量总和不一致</p>` + baseInfo);
+    hideActions();
+  }else{
+    showModal('检测通过',
+      `<p class="ok">✅ 数量一致，可以生成座次表</p>` + baseInfo);
+    showActions();
+  }
+}
+
+/* ======================================================================
+   版面自适应：普通候考室
+   —— 布局按“姓名/其他 中较大字号”计算，压缩时三个字号同步缩放
+   ====================================================================== */
+function calcLayout(maxRows, maxSubjLines){
+  const availH = PAGE_H - CONFIG.padTop - CONFIG.padBottom - CONFIG.titleBlockHeight;
+
+  const nameFs   = CONFIG.nameFontSize;
+  const otherFs  = CONFIG.otherFontSize;
+  const layoutFs = Math.max(nameFs, otherFs);   // 布局基准取大者
+
+  let fs   = layoutFs;
+  let rowH = CONFIG.dataRowHeight;
+
+  const measure = () => {
+    const lineMM = fs * 0.3528 * 1.35;
+    const h1 = Math.max(CONFIG.headerRowHeight, lineMM * 1.7);
+    const h2 = Math.max(CONFIG.headerRowHeight, lineMM * 1.7);
+    const h3 = Math.max(CONFIG.headerRowHeight, lineMM * maxSubjLines + 1.8);
+    return {h1, h2, h3, need: h1 + h2 + h3 + maxRows * rowH};
+  };
+
+  let m = measure();
+  if (m.need > availH){
+    const k = availH / m.need;
+    fs   = Math.max(CONFIG.minFontSize, fs * k);
+    rowH = Math.max(CONFIG.minDataRowHeight, rowH * k);
+    m = measure();
+  }
+
+  const scale = fs / layoutFs;   // 压缩比
+  const r2 = v => Math.round(v * 100) / 100;
+
+  return {
+    fs      : r2(fs),
+    nameFs  : r2(nameFs  * scale),
+    otherFs : r2(otherFs * scale),
+    rowH    : r2(rowH),
+    h1      : r2(m.h1),
+    h2      : r2(m.h2),
+    h3      : r2(m.h3)
+  };
+}
+
+/* ======================================================================
+   版面自适应：阶梯教室（转置）
+   —— 最高行自适应，其他行固定；三个字号同步缩放
+   ====================================================================== */
+function calcLayoutTrans(roomList){
+  const availH  = PAGE_H - CONFIG.padTop - CONFIG.padBottom - CONFIG.titleBlockHeight;
+  const n       = roomList.length;
+  const maxSubjLines = roomList.reduce((m, r) => Math.max(m, r.subjects.length), 1);
+
+  const nameFs   = CONFIG.nameFontSize;
+  const otherFs  = CONFIG.otherFontSize;
+  const layoutFs = Math.max(nameFs, otherFs);
+
+  let fs   = layoutFs;
+  let rowH = CONFIG.transDataRowHeight;
+
+  const measure = () => {
+    const lineMM = fs * 0.3528 * 1.35;
+    const headerH = Math.max(CONFIG.headerRowHeight, lineMM * 1.8);
+    const maxRowH = Math.max(rowH, maxSubjLines * lineMM + CONFIG.transMaxRowExtra);
+    const need    = headerH + maxRowH + (n - 1) * rowH;
+    return {headerH, maxRowH, need};
+  };
+
+  let m = measure();
+  if (m.need > availH){
+    const k = availH / m.need;
+    fs   = Math.max(CONFIG.minFontSize, fs * k);
+    rowH = Math.max(CONFIG.transMinRowHeight, rowH * k);
+    m = measure();
+  }
+
+  const scale = fs / layoutFs;
+  const r2 = v => Math.round(v * 100) / 100;
+
+  return {
+    fs      : r2(fs),
+    nameFs  : r2(nameFs  * scale),
+    otherFs : r2(otherFs * scale),
+    headerH : r2(m.headerH),
+    rowH    : r2(rowH),
+    maxRowH : r2(m.maxRowH)
+  };
+}
+
+/* ======================================================================
+   公共：场次标题
+   ====================================================================== */
+function getPeriod(session){
+  const t = session.start || session.end || '';
+  const m = String(t).match(/(\d{1,2}):(\d{2})/);
+  if (!m) return '上午';
+  return (+m[1]) < 12 ? '上午' : '下午';
+}
+
+function buildTitle(session, idx){
+  const d = String(session.date || '').split('-');
+  return (d.length === 3)
+    ? `${+d[1]}月${+d[2]}日 ${getPeriod(session)}　第${cnNum(idx)}候考室　考生座次表`
+    : `第${cnNum(idx)}候考室　考生座次表`;
+}
+
+/* ======================================================================
+   生成单页：普通候考室
+   ====================================================================== */
+function buildPage(session, roomList, idx){
+  const maxRows      = roomList.reduce((m, r) => Math.max(m, r.names.length), 0);
+  const maxSubjLines = roomList.reduce((m, r) => Math.max(m, r.subjects.length), 1);
+  const L            = calcLayout(maxRows, maxSubjLines);
+  const n            = roomList.length;
+
+  const seatPct  = CONFIG.seatColPercent;
+  const groupPct = CONFIG.groupColPercent != null
+                 ? CONFIG.groupColPercent
+                 : (100 - seatPct) / n;
+
+  let cols = `<col style="width:${seatPct}%">`;
+  for (let i = 0; i < n; i++) cols += `<col style="width:${groupPct}%">`;
+
+  const title = buildTitle(session, idx);
+
+  let html = `<div class="page" style="
+      padding:${CONFIG.padTop}mm ${CONFIG.padX}mm ${CONFIG.padBottom}mm;
+      --fs-title:${CONFIG.titleFontSize}pt;
+      --fs-name:${L.nameFs}pt;
+      --fs-other:${L.otherFs}pt;
+      --h1:${L.h1}mm; --h2:${L.h2}mm; --h3:${L.h3}mm; --rowH:${L.rowH}mm;">`;
+
+  html += `<h2>${escapeHtml(title)}</h2>`;
+  html += `<table><colgroup>${cols}</colgroup>`;
+
+  html += '<thead>';
+  html += '<tr><th class="c-seat">座位</th>'
+        + roomList.map((r, i) => `<th>第${cnNum(i + 1)}组</th>`).join('')
+        + '</tr>';
+  html += '<tr><th class="c-seat">考场</th>'
+        + roomList.map(r => `<td>${r.no}</td>`).join('')
+        + '</tr>';
+  html += '<tr><th class="c-seat">学科</th>'
+        + roomList.map(r => `<td>${r.subjects.map(escapeHtml).join('<br>')}</td>`).join('')
+        + '</tr>';
+  html += '</thead>';
+
+  html += '<tbody>';
+  for (let i = 0; i < maxRows; i++){
+    html += `<tr><td class="c-seat">${i + 1}</td>`;
+    roomList.forEach(r => {
+      const nm = r.names[i];
+      html += nm
+        ? `<td class="name-cell">${escapeHtml(nm)}</td>`
+        : '<td class="empty"></td>';
+    });
+    html += '</tr>';
+  }
+  html += '</tbody></table></div>';
+
+  return html;
+}
+
+/* ======================================================================
+   生成单页：阶梯教室（转置）
+   ====================================================================== */
+function buildPageTransposed(session, roomList, idx){
+  const maxCols      = roomList.reduce((m, r) => Math.max(m, r.names.length), 0);
+  const maxSubjLines = roomList.reduce((m, r) => Math.max(m, r.subjects.length), 1);
+  const L            = calcLayoutTrans(roomList);
+
+  const c1 = CONFIG.transSeatColPercent;
+  const c2 = CONFIG.transRoomColPercent;
+  const c3 = CONFIG.transSubjColPercent;
+  const namePct = (100 - c1 - c2 - c3) / Math.max(maxCols, 1);
+
+  let cols = `<col style="width:${c1}%">`
+           + `<col style="width:${c2}%">`
+           + `<col style="width:${c3}%">`;
+  for (let i = 0; i < maxCols; i++) cols += `<col style="width:${namePct}%">`;
+
+  const title = buildTitle(session, idx);
+
+  let html = `<div class="page transposed" style="
+      padding:${CONFIG.padTop}mm ${CONFIG.padX}mm ${CONFIG.padBottom}mm;
+      --fs-title:${CONFIG.titleFontSize}pt;
+      --fs-name:${L.nameFs}pt;
+      --fs-other:${L.otherFs}pt;
+      --h1:${L.headerH}mm;">`;
+
+  html += `<h2>${escapeHtml(title)}</h2>`;
+  html += `<table><colgroup>${cols}</colgroup>`;
+
+  /* 表头：座位 | 考场 | 学科 | 1 | 2 | 3 ... */
+  html += '<thead><tr>';
+  html += '<th class="c-seat">座位</th>';
+  html += '<th>考场</th>';
+  html += '<th>学科</th>';
+  for (let i = 0; i < maxCols; i++){
+    html += `<td>${i + 1}</td>`;
+  }
+  html += '</tr></thead>';
+
+  /* 数据：每个考场一行；最高行用 maxRowH，其他行用 rowH */
+  html += '<tbody>';
+  roomList.forEach((room, i) => {
+    const isMax = (room.subjects.length === maxSubjLines);
+    const h     = isMax ? L.maxRowH : L.rowH;
+    html += `<tr style="height:${h}mm">`;
+    html += `<td class="c-seat">第${cnNum(i + 1)}排</td>`;
+    html += `<td>${room.no}</td>`;
+    html += `<td>${room.subjects.map(escapeHtml).join('<br>')}</td>`;
+    for (let j = 0; j < maxCols; j++){
+      const nm = room.names[j];
+      html += nm
+        ? `<td class="name-cell">${escapeHtml(nm)}</td>`
+        : '<td class="empty"></td>';
+    }
+    html += '</tr>';
+  });
+  html += '</tbody></table></div>';
+
+  return html;
+}
+
+/* ======================================================================
+   生成座次表
+   ====================================================================== */
+function render(){
+  if (!DB){
+    showModal('提示', '<p>请先上传数据文件。</p>');
+    return;
+  }
+  const sizes = parseSizes();
+  if (!sizes.length){
+    showModal('提示', '<p>请填写有效的考场数量，例如：<b>3,3,3,3,3,3,3</b></p>');
+    return;
+  }
+
+  let html  = '';
+  let pages = 0;
+
+  DB.sessions.forEach(session => {
+    const roomNos = session.rooms.map(r => r.no).sort((a, b) => a - b);
+    if (!roomNos.length) return;
+
+    const chunks = [];
+    let cursor = 0;
+    for (let i = 0; i < sizes.length; i++){
+      if (cursor >= roomNos.length) break;
+      const {n, trans} = sizes[i];
+      chunks.push({nos: roomNos.slice(cursor, cursor + n), trans});
+      cursor += n;
+    }
+    if (cursor < roomNos.length){
+      if (chunks.length){
+        chunks[chunks.length - 1].nos =
+          chunks[chunks.length - 1].nos.concat(roomNos.slice(cursor));
+      }else{
+        chunks.push({nos: roomNos.slice(cursor), trans: false});
+      }
+    }
+
+    const roomMap = new Map(session.rooms.map(r => [r.no, r]));
+
+    chunks.forEach((chunk, ci) => {
+      const roomList = chunk.nos.map(no => roomMap.get(no));
+      if (chunk.trans){
+        html += buildPageTransposed(session, roomList, ci + 1);
+      }else{
+        html += buildPage(session, roomList, ci + 1);
+      }
+      pages++;
+    });
+  });
+
+  document.getElementById('out').innerHTML = html ||
+    '<p style="text-align:center;color:#888;padding:60px 0;">没有可生成的数据</p>';
+
+  HAS_RENDERED = true;
+  setTip(`已生成 ${pages} 页座次表，可点「导出PDF」打印。`);
+  window.scrollTo({top: 0, behavior: 'smooth'});
+}
+
+/* ======================================================================
+   导出 PDF
+   ====================================================================== */
+function exportPDF(){
+  if (!HAS_RENDERED){
+    showModal('提示', '<p>请先点击「生成座次表」。</p>');
+    return;
+  }
+  window.print();
+}
+
+/* ======================================================================
+   事件绑定
+   ====================================================================== */
+document.getElementById('file').addEventListener('change', e => {
+  handleFile(e.target.files && e.target.files[0]);
+});
+
+document.getElementById('cfg').addEventListener('input', () => {
+  hideActions();
+  HAS_RENDERED = false;
+  setTip('考场数量已修改，请重新点「检测」。数字后加 * 表示阶梯教室。');
+});
+
+document.getElementById('mask').addEventListener('click', e => {
+  if (e.target.id === 'mask') closeModal();
+});
+
+window.addEventListener('load', () => {
+  if (typeof XLSX === 'undefined'){
+    setTip('提示：解析库未加载成功（可能无网络），可将 Excel 另存为 .csv 后上传。');
+  }
+});
+</script>
+</body>
+</html>
