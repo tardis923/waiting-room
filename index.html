@@ -587,7 +587,7 @@ function getPeriod(session){
 function buildTitle(session, idx){
   const d = String(session.date || '').split('-');
   return (d.length === 3)
-    ? `${+d[1]}月${+d[2]}日 ${getPeriod(session)}　第${cnNum(idx)}候考室　考生座次表`
+    ? `${+d[1]}月${+d[2]}日${getPeriod(session)}　  第${cnNum(idx)}候考室  　考生座次表`
     : `第${cnNum(idx)}候考室　考生座次表`;
 }
 
